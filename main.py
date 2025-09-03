@@ -5,7 +5,7 @@ import numpy as np
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QGridLayout, QLabel, QVBoxLayout,
     QFileDialog, QGraphicsView, QGraphicsScene, QGraphicsRectItem, QPushButton,
-    QHBoxLayout, QProgressBar, QLineEdit, QFontComboBox, QSpinBox, QColorDialog, QDoubleSpinBox
+    QHBoxLayout, QProgressBar, QLineEdit, QFontComboBox, QSpinBox, QColorDialog, QDoubleSpinBox, QComboBox, QCheckBox, QSlider
 )
 from PySide6.QtGui import (
     QColor, QPalette, QMouseEvent, QPen, QBrush, QFont, QPainter, QImage, QPixmap
@@ -13,6 +13,7 @@ from PySide6.QtGui import (
 from PySide6.QtCore import Qt, Signal, QRectF, QTimer, QObject, QThread, QPointF
 from moviepy.editor import (VideoFileClip, concatenate_videoclips, TextClip, 
                               CompositeVideoClip, AudioFileClip, concatenate_audioclips)
+import moviepy.video.fx.all as vfx
 from PIL import Image, ImageDraw, ImageFont
 
 # --- Data Types ---
@@ -26,41 +27,38 @@ class Exporter(QObject):
     progress = Signal(int); finished = Signal(); error = Signal(str)
     def export(self, clips_data, output_path):
         try:
-            video_clips_info = [c for c in clips_data if c['type'] == CLIP_TYPE]
+            video_clips_info = sorted([c for c in clips_data if c['type'] == CLIP_TYPE], key=lambda c: c['x'])
             text_clips_info = [c for c in clips_data if c['type'] == TEXT_TYPE]
             audio_clips_info = [c for c in clips_data if c['type'] == AUDIO_TYPE]
+            transition_info = [c for c in clips_data if c['type'] == TRANSITION_TYPE]
+
             if not video_clips_info: self.error.emit("No video clips on timeline to export."); return
-            
-            video_clips_info.sort(key=lambda c: c['x'])
 
-            moviepy_video_clips = [VideoFileClip(c['data'][0]).subclip(c['data'][2], c['data'][2] + c['data'][1]) for c in video_clips_info]
+            moviepy_video_clips = []
+            for c in video_clips_info:
+                clip = VideoFileClip(c['data'][0]).subclip(c['data'][2], c['data'][2] + c['data'][1])
+                if c['data'][3]: # Grayscale
+                    clip = clip.fx(vfx.blackwhite)
+                clip = clip.volumex(c['data'][4]) # Volume
+                moviepy_video_clips.append(clip)
             
-            final_clips = []
-            if moviepy_video_clips:
-                final_clips.append(moviepy_video_clips[0])
-                for i in range(len(moviepy_video_clips) - 1):
-                    transition_duration = 1
-                    clip1 = final_clips.pop()
-                    clip2 = moviepy_video_clips[i+1]
-                    clip1 = clip1.subclip(0, clip1.duration - transition_duration)
-                    from moviepy.effects.vfx.fadein import fadein
-                    from moviepy.effects.vfx.fadeout import fadeout
-                    final_clip = CompositeVideoClip([clip1, clip2.set_start(clip1.duration-transition_duration).crossfadein(transition_duration)])
-                    final_clips.append(final_clip)
-
-            base_video = concatenate_videoclips(final_clips)
+            final_video = concatenate_videoclips(moviepy_video_clips, method="compose")
             self.progress.emit(20)
 
-            moviepy_text_clips = [TextClip(c['data'][0], fontsize=c['data'][3], color=c['data'][4], font=c['data'][2], size=base_video.size).set_duration(c['data'][1]).set_start(c['x'] / 50.0) for c in text_clips_info]
+            moviepy_text_clips = [TextClip(c['data'][0], fontsize=c['data'][3], color=c['data'][4], font=c['data'][2], size=final_video.size).set_duration(c['data'][1]).set_start(c['x'] / 50.0) for c in text_clips_info]
             self.progress.emit(40)
             
             final_audio = None
             if audio_clips_info:
-                moviepy_audio_clips = [AudioFileClip(c['data'][0]).set_duration(c['data'][1]) for c in audio_clips_info]
+                moviepy_audio_clips = []
+                for c in audio_clips_info:
+                    clip = AudioFileClip(c['data'][0]).set_duration(c['data'][1])
+                    clip = clip.volumex(c['data'][2]) # Volume
+                    moviepy_audio_clips.append(clip)
                 final_audio = concatenate_audioclips(moviepy_audio_clips)
             self.progress.emit(60)
 
-            final_clip = CompositeVideoClip([base_video] + moviepy_text_clips)
+            final_clip = CompositeVideoClip([final_video] + moviepy_text_clips)
             if final_audio: final_clip.audio = final_audio
             
             def moviepy_progress(t, duration): self.progress.emit(60 + int((t / duration) * 40))
@@ -156,6 +154,9 @@ class PropertiesPanel(QWidget):
     font_size_changed = Signal(int)
     color_changed = Signal(QColor)
     transition_duration_changed = Signal(float)
+    transition_type_changed = Signal(str)
+    grayscale_effect_changed = Signal(bool)
+    volume_changed = Signal(int)
 
     def __init__(self):
         super().__init__(); self.setAutoFillBackground(True)
@@ -169,20 +170,33 @@ class PropertiesPanel(QWidget):
         self.font_size_label = QLabel("Font Size:"); self.font_size_spinbox = QSpinBox(); self.font_size_spinbox.setRange(1, 200); self.font_size_spinbox.setValue(70)
         self.color_label = QLabel("Color:"); self.color_button = QPushButton("Select Color")
 
+        self.transition_type_label = QLabel("Transition Type:"); self.transition_type_combo = QComboBox(); self.transition_type_combo.addItems(["Crossfade", "Fade to Black", "Wipe Left"])
         self.transition_duration_label = QLabel("Transition Duration (s):"); self.transition_duration_spinbox = QDoubleSpinBox(); self.transition_duration_spinbox.setRange(0.1, 10.0); self.transition_duration_spinbox.setSingleStep(0.1)
+
+        self.effects_label = QLabel("Effects"); self.effects_label.setStyleSheet("font-weight: bold; margin-top: 10px;")
+        self.grayscale_checkbox = QCheckBox("Grayscale")
+
+        self.volume_label = QLabel("Volume:"); self.volume_slider = QSlider(Qt.Horizontal); self.volume_slider.setRange(0, 150); self.volume_value_label = QLabel("100%")
 
         self.layout.addWidget(self.path_label); self.layout.addWidget(self.duration_label)
         self.layout.addWidget(self.text_edit_label); self.layout.addWidget(self.text_edit)
         self.layout.addWidget(self.font_label); self.layout.addWidget(self.font_combo)
         self.layout.addWidget(self.font_size_label); self.layout.addWidget(self.font_size_spinbox)
         self.layout.addWidget(self.color_label); self.layout.addWidget(self.color_button)
+        self.layout.addWidget(self.transition_type_label); self.layout.addWidget(self.transition_type_combo)
         self.layout.addWidget(self.transition_duration_label); self.layout.addWidget(self.transition_duration_spinbox)
+        self.layout.addWidget(self.effects_label); self.layout.addWidget(self.grayscale_checkbox)
+        self.layout.addWidget(self.volume_label); self.layout.addWidget(self.volume_slider); self.layout.addWidget(self.volume_value_label)
 
         self.text_edit.textChanged.connect(self.text_changed.emit)
         self.font_combo.currentFontChanged.connect(lambda font: self.font_changed.emit(font.family()))
         self.font_size_spinbox.valueChanged.connect(self.font_size_changed.emit)
         self.color_button.clicked.connect(self.open_color_dialog)
         self.transition_duration_spinbox.valueChanged.connect(self.transition_duration_changed.emit)
+        self.transition_type_combo.currentTextChanged.connect(self.transition_type_changed.emit)
+        self.grayscale_checkbox.toggled.connect(self.grayscale_effect_changed.emit)
+        self.volume_slider.valueChanged.connect(self.volume_changed.emit)
+        self.volume_slider.valueChanged.connect(lambda value: self.volume_value_label.setText(f"{value}%"))
         
         self.clear_properties()
 
@@ -198,17 +212,26 @@ class PropertiesPanel(QWidget):
     def update_for_item(self, item):
         self.clear_properties()
         if not item: return
-        if item.type() in [CLIP_TYPE, AUDIO_TYPE]:
+        if item.type() == CLIP_TYPE:
             self.path_label.show(); self.duration_label.show()
             self.path_label.setText(f"File: {item.data(0)}"); self.duration_label.setText(f"Duration: {item.data(1):.2f}s")
+            self.effects_label.show(); self.grayscale_checkbox.show()
+            self.grayscale_checkbox.setChecked(item.data(3))
+            self.volume_label.show(); self.volume_slider.show(); self.volume_value_label.show()
+            self.volume_slider.setValue(int(item.data(4) * 100))
+        elif item.type() == AUDIO_TYPE:
+            self.path_label.show(); self.duration_label.show()
+            self.path_label.setText(f"File: {item.data(0)}"); self.duration_label.setText(f"Duration: {item.data(1):.2f}s")
+            self.volume_label.show(); self.volume_slider.show(); self.volume_value_label.show()
+            self.volume_slider.setValue(int(item.data(2) * 100))
         elif item.type() == TEXT_TYPE:
             self.text_edit_label.show(); self.text_edit.show(); self.text_edit.setText(item.data(0))
             self.font_label.show(); self.font_combo.show(); self.font_combo.setCurrentFont(QFont(item.data(2)))
             self.font_size_label.show(); self.font_size_spinbox.show(); self.font_size_spinbox.setValue(item.data(3))
             self.color_label.show(); self.color_button.show(); self.update_color_button(QColor(item.data(4)))
         elif item.type() == TRANSITION_TYPE:
-            self.path_label.show()
-            self.path_label.setText(f"Transition: {item.data(0)}")
+            self.transition_type_label.show(); self.transition_type_combo.show()
+            self.transition_type_combo.setCurrentText(item.data(0))
             self.transition_duration_label.show(); self.transition_duration_spinbox.show()
             self.transition_duration_spinbox.setValue(item.data(1))
 
@@ -218,7 +241,10 @@ class PropertiesPanel(QWidget):
         self.font_label.hide(); self.font_combo.hide()
         self.font_size_label.hide(); self.font_size_spinbox.hide()
         self.color_label.hide(); self.color_button.hide()
+        self.transition_type_label.hide(); self.transition_type_combo.hide()
         self.transition_duration_label.hide(); self.transition_duration_spinbox.hide()
+        self.effects_label.hide(); self.grayscale_checkbox.hide()
+        self.volume_label.hide(); self.volume_slider.hide(); self.volume_value_label.hide()
 
 class Timeline(QGraphicsView):
     frame_ready = Signal(QImage); item_selected = Signal(QGraphicsRectItem)
@@ -252,7 +278,8 @@ class Timeline(QGraphicsView):
             for item in self.scene.items():
                 if isinstance(item, VideoClipItem): x_pos = max(x_pos, item.sceneBoundingRect().right())
             clip_rect = VideoClipItem(x_pos, self.video_track_y, clip_width, self.track_height - 10)
-            clip_rect.setData(0, file_path); clip_rect.setData(1, duration); clip_rect.setData(2, 0.0); self.scene.addItem(clip_rect)
+            clip_rect.setData(0, file_path); clip_rect.setData(1, duration); clip_rect.setData(2, 0.0); clip_rect.setData(3, False); clip_rect.setData(4, 1.0) # Grayscale, Volume
+            self.scene.addItem(clip_rect)
         except Exception as e: print(f"Error adding clip: {e}")
 
     def add_text_clip(self):
@@ -268,7 +295,8 @@ class Timeline(QGraphicsView):
             for item in self.scene.items():
                 if isinstance(item, AudioClipItem): x_pos = max(x_pos, item.sceneBoundingRect().right())
             clip_rect = AudioClipItem(x_pos, self.audio_track_y, clip_width, self.track_height - 10)
-            clip_rect.setData(0, file_path); clip_rect.setData(1, duration); self.scene.addItem(clip_rect)
+            clip_rect.setData(0, file_path); clip_rect.setData(1, duration); clip_rect.setData(2, 1.0) # Volume
+            self.scene.addItem(clip_rect)
         except Exception as e: print(f"Error adding audio clip: {e}")
 
     def add_transition(self):
@@ -284,7 +312,7 @@ class Timeline(QGraphicsView):
                 duration = 1.0
                 width = duration * self.pixels_per_second
                 transition_item = TransitionItem(clip1.sceneBoundingRect().right() - width / 2, self.video_track_y, width, self.track_height - 10)
-                transition_item.setData(0, 'crossfade')
+                transition_item.setData(0, 'Crossfade')
                 transition_item.setData(1, duration)
                 self.scene.addItem(transition_item)
 
@@ -293,8 +321,9 @@ class Timeline(QGraphicsView):
         for item in self.scene.items():
             if not isinstance(item, QGraphicsRectItem): continue
             num_data = 0
-            if item.type() == TEXT_TYPE: num_data = 5
-            elif item.type() in [CLIP_TYPE, AUDIO_TYPE]: num_data = 3
+            if item.type() == CLIP_TYPE: num_data = 5
+            elif item.type() == TEXT_TYPE: num_data = 5
+            elif item.type() == AUDIO_TYPE: num_data = 3
             elif item.type() == TRANSITION_TYPE: num_data = 2
             item_data = {
                 'type': item.type(),
@@ -345,6 +374,24 @@ class Timeline(QGraphicsView):
             width = duration * self.pixels_per_second
             item.setRect(item.rect().x(), item.rect().y(), width, item.rect().height())
 
+    def update_selected_transition_type(self, type):
+        selected_items = self.scene.selectedItems()
+        if selected_items and selected_items[0].type() == TRANSITION_TYPE:
+            selected_items[0].setData(0, type)
+
+    def update_grayscale_effect(self, state):
+        selected_items = self.scene.selectedItems()
+        if selected_items and selected_items[0].type() == CLIP_TYPE:
+            selected_items[0].setData(3, bool(state))
+
+    def update_volume(self, value):
+        selected_items = self.scene.selectedItems()
+        if not selected_items: return
+        item = selected_items[0]
+        if item.type() == CLIP_TYPE:
+            item.setData(4, value / 100.0)
+        elif item.type() == AUDIO_TYPE:
+            item.setData(2, value / 100.0)
 
     def play(self): self.playback_timer.start()
     def pause(self): self.playback_timer.stop()
@@ -386,14 +433,21 @@ class Timeline(QGraphicsView):
         if cap:
             cap.set(cv2.CAP_PROP_POS_MSEC, total_time_in_source * 1000)
             ret, frame = cap.read()
-            if ret: return frame
+            if ret:
+                if clip_item.data(3): # Grayscale
+                    gray_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+                    frame = cv2.cvtColor(gray_frame, cv2.COLOR_GRAY2BGR)
+                return frame
         return np.zeros((100, 100, 3), np.uint8)
 
     def get_video_frame_at(self, x_pos):
         transition_items = [item for item in self.scene.items(QRectF(x_pos, self.video_track_y, 1, self.track_height)) if item.type() == TRANSITION_TYPE]
         if transition_items:
             transition_item = transition_items[0]
+            transition_type = transition_item.data(0)
             transition_rect = transition_item.sceneBoundingRect()
+            progress = (x_pos - transition_rect.left()) / transition_rect.width()
+
             clip1_items = [item for item in self.scene.items(QRectF(transition_rect.left() - 1, self.video_track_y, 1, self.track_height)) if item.type() == CLIP_TYPE]
             clip2_items = [item for item in self.scene.items(QRectF(transition_rect.right(), self.video_track_y, 1, self.track_height)) if item.type() == CLIP_TYPE]
 
@@ -402,11 +456,21 @@ class Timeline(QGraphicsView):
                 clip2 = clip2_items[0]
                 frame1 = self.get_frame_from_clip(clip1, x_pos)
                 frame2 = self.get_frame_from_clip(clip2, x_pos)
-                progress = (x_pos - transition_rect.left()) / transition_rect.width()
                 h, w, _ = frame1.shape
-                frame2_resized = cv2.resize(frame2, (w, h))
-                blended_frame = cv2.addWeighted(frame1, 1 - progress, frame2_resized, progress, 0)
-                return blended_frame
+                frame2 = cv2.resize(frame2, (w, h))
+
+                if transition_type == "Crossfade":
+                    return cv2.addWeighted(frame1, 1 - progress, frame2, progress, 0)
+                elif transition_type == "Fade to Black":
+                    if progress < 0.5:
+                        return cv2.addWeighted(frame1, 1 - (progress * 2), np.zeros_like(frame1), progress * 2, 0)
+                    else:
+                        return cv2.addWeighted(np.zeros_like(frame2), 1 - ((progress - 0.5) * 2), frame2, (progress - 0.5) * 2, 0)
+                elif transition_type == "Wipe Left":
+                    mask = np.zeros_like(frame1)
+                    wipe_x = int(w * progress)
+                    mask[:, :wipe_x] = 255
+                    return np.where(mask == 255, frame2, frame1)
 
         video_items = [item for item in self.scene.items(QRectF(x_pos, self.video_track_y, 1, self.track_height)) if item.type() == CLIP_TYPE]
         if not video_items: return np.zeros((100, 100, 3), np.uint8)
@@ -453,7 +517,7 @@ class MainWindow(QMainWindow):
         self.timeline_panel = Timeline()
         controls_widget = QWidget(); controls_layout = QHBoxLayout(controls_widget)
         play_button = QPushButton("Play"); pause_button = QPushButton("Pause"); split_button = QPushButton("Split"); delete_button = QPushButton("Delete")
-        add_transition_button = QPushButton("Add Fade")
+        add_transition_button = QPushButton("Add Transition")
         controls_layout.addWidget(play_button); controls_layout.addWidget(pause_button); controls_layout.addWidget(split_button); controls_layout.addWidget(delete_button)
         controls_layout.addWidget(add_transition_button)
         timeline_layout.addWidget(controls_widget); timeline_layout.addWidget(self.timeline_panel)
@@ -472,6 +536,9 @@ class MainWindow(QMainWindow):
         self.properties_panel.font_size_changed.connect(self.timeline_panel.update_selected_text_font_size)
         self.properties_panel.color_changed.connect(self.timeline_panel.update_selected_text_color)
         self.properties_panel.transition_duration_changed.connect(self.timeline_panel.update_selected_transition_duration)
+        self.properties_panel.transition_type_changed.connect(self.timeline_panel.update_selected_transition_type)
+        self.properties_panel.grayscale_effect_changed.connect(self.timeline_panel.update_grayscale_effect)
+        self.properties_panel.volume_changed.connect(self.timeline_panel.update_volume)
         self.timeline_panel.frame_ready.connect(self.preview_panel.set_frame)
         play_button.clicked.connect(self.timeline_panel.play); pause_button.clicked.connect(self.timeline_panel.pause)
         split_button.clicked.connect(self.timeline_panel.split_selected); delete_button.clicked.connect(self.timeline_panel.delete_selected)
