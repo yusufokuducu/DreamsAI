@@ -5,12 +5,12 @@ import numpy as np
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QGridLayout, QLabel, QVBoxLayout,
     QFileDialog, QGraphicsView, QGraphicsScene, QGraphicsRectItem, QPushButton,
-    QHBoxLayout, QProgressBar, QLineEdit, QFontComboBox, QSpinBox, QColorDialog
+    QHBoxLayout, QProgressBar, QLineEdit, QFontComboBox, QSpinBox, QColorDialog, QDoubleSpinBox
 )
 from PySide6.QtGui import (
     QColor, QPalette, QMouseEvent, QPen, QBrush, QFont, QPainter, QImage, QPixmap
 )
-from PySide6.QtCore import Qt, Signal, QRectF, QTimer, QObject, QThread
+from PySide6.QtCore import Qt, Signal, QRectF, QTimer, QObject, QThread, QPointF
 from moviepy.editor import (VideoFileClip, concatenate_videoclips, TextClip, 
                               CompositeVideoClip, AudioFileClip, concatenate_audioclips)
 from PIL import Image, ImageDraw, ImageFont
@@ -31,34 +31,22 @@ class Exporter(QObject):
             audio_clips_info = [c for c in clips_data if c['type'] == AUDIO_TYPE]
             if not video_clips_info: self.error.emit("No video clips on timeline to export."); return
             
-            # Sort clips by their x position
             video_clips_info.sort(key=lambda c: c['x'])
 
             moviepy_video_clips = [VideoFileClip(c['data'][0]).subclip(c['data'][2], c['data'][2] + c['data'][1]) for c in video_clips_info]
             
-            # Handle transitions (assuming crossfade for now)
             final_clips = []
             if moviepy_video_clips:
                 final_clips.append(moviepy_video_clips[0])
                 for i in range(len(moviepy_video_clips) - 1):
-                    # Check if there is a transition between clip i and i+1
-                    transition_duration = 1 # default 1 second
-                    # A more robust way would be to get this from transition_items on timeline
-                    
+                    transition_duration = 1
                     clip1 = final_clips.pop()
                     clip2 = moviepy_video_clips[i+1]
-
-                    # Adjust clip durations for the transition
                     clip1 = clip1.subclip(0, clip1.duration - transition_duration)
-                    
-                    # Create the transition
                     from moviepy.effects.vfx.fadein import fadein
                     from moviepy.effects.vfx.fadeout import fadeout
-                    
-                    # This is a simple crossfade, more complex logic needed for other transitions
                     final_clip = CompositeVideoClip([clip1, clip2.set_start(clip1.duration-transition_duration).crossfadein(transition_duration)])
                     final_clips.append(final_clip)
-
 
             base_video = concatenate_videoclips(final_clips)
             self.progress.emit(20)
@@ -81,23 +69,66 @@ class Exporter(QObject):
         except Exception as e: self.error.emit(str(e))
 
 # --- Custom Graphics Items ---
-class VideoClipItem(QGraphicsRectItem):
+class TimelineClipItem(QGraphicsRectItem):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.setFlag(QGraphicsRectItem.ItemIsMovable)
+        self.setFlag(QGraphicsRectItem.ItemIsSelectable)
+
+    def mouseMoveEvent(self, event: QMouseEvent):
+        new_pos = event.scenePos()
+        snap_distance = 10
+        snapped = False
+        all_items = self.scene().items()
+        snap_points = []
+        for item in all_items:
+            if item is not self and isinstance(item, QGraphicsRectItem):
+                snap_points.append(item.sceneBoundingRect().left())
+                snap_points.append(item.sceneBoundingRect().right())
+        playhead = self.scene().views()[0].playhead
+        snap_points.append(playhead.line().x1())
+        my_left = new_pos.x()
+        my_right = new_pos.x() + self.rect().width()
+        for point in snap_points:
+            if abs(my_left - point) < snap_distance:
+                new_pos.setX(point)
+                snapped = True
+                break
+            if abs(my_right - point) < snap_distance:
+                new_pos.setX(point - self.rect().width())
+                snapped = True
+                break
+        if snapped:
+            self.setPos(QPointF(new_pos.x(), self.y()))
+        else:
+            super().mouseMoveEvent(event)
+
+class VideoClipItem(TimelineClipItem):
     def type(self): return CLIP_TYPE
-    def __init__(self, *args, **kwargs): super().__init__(*args, **kwargs); self.setBrush(QBrush(QColor("#4a82da"))); self.setPen(QPen(Qt.NoPen)); self.setFlag(QGraphicsRectItem.ItemIsMovable); self.setFlag(QGraphicsRectItem.ItemIsSelectable)
+    def __init__(self, *args, **kwargs): 
+        super().__init__(*args, **kwargs)
+        self.setBrush(QBrush(QColor("#4a82da")))
+        self.setPen(QPen(Qt.NoPen))
 
-class TextClipItem(QGraphicsRectItem):
+class TextClipItem(TimelineClipItem):
     def type(self): return TEXT_TYPE
-    def __init__(self, *args, **kwargs): super().__init__(*args, **kwargs); self.setBrush(QBrush(QColor("#db8d4a"))); self.setPen(QPen(Qt.NoPen)); self.setFlag(QGraphicsRectItem.ItemIsMovable); self.setFlag(QGraphicsRectItem.ItemIsSelectable)
+    def __init__(self, *args, **kwargs): 
+        super().__init__(*args, **kwargs)
+        self.setBrush(QBrush(QColor("#db8d4a")))
+        self.setPen(QPen(Qt.NoPen))
 
-class AudioClipItem(QGraphicsRectItem):
+class AudioClipItem(TimelineClipItem):
     def type(self): return AUDIO_TYPE
-    def __init__(self, *args, **kwargs): super().__init__(*args, **kwargs); self.setBrush(QBrush(QColor("#4adbad"))); self.setPen(QPen(Qt.NoPen)); self.setFlag(QGraphicsRectItem.ItemIsMovable); self.setFlag(QGraphicsRectItem.ItemIsSelectable)
+    def __init__(self, *args, **kwargs): 
+        super().__init__(*args, **kwargs)
+        self.setBrush(QBrush(QColor("#4adbad")))
+        self.setPen(QPen(Qt.NoPen))
 
 class TransitionItem(QGraphicsRectItem):
     def type(self): return TRANSITION_TYPE
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        self.setBrush(QBrush(QColor(255, 0, 0, 128))) # Semi-transparent red
+        self.setBrush(QBrush(QColor(255, 0, 0, 128)))
         self.setPen(QPen(Qt.NoPen))
         self.setFlag(QGraphicsRectItem.ItemIsSelectable)
 
@@ -124,6 +155,7 @@ class PropertiesPanel(QWidget):
     font_changed = Signal(str)
     font_size_changed = Signal(int)
     color_changed = Signal(QColor)
+    transition_duration_changed = Signal(float)
 
     def __init__(self):
         super().__init__(); self.setAutoFillBackground(True)
@@ -137,16 +169,20 @@ class PropertiesPanel(QWidget):
         self.font_size_label = QLabel("Font Size:"); self.font_size_spinbox = QSpinBox(); self.font_size_spinbox.setRange(1, 200); self.font_size_spinbox.setValue(70)
         self.color_label = QLabel("Color:"); self.color_button = QPushButton("Select Color")
 
+        self.transition_duration_label = QLabel("Transition Duration (s):"); self.transition_duration_spinbox = QDoubleSpinBox(); self.transition_duration_spinbox.setRange(0.1, 10.0); self.transition_duration_spinbox.setSingleStep(0.1)
+
         self.layout.addWidget(self.path_label); self.layout.addWidget(self.duration_label)
         self.layout.addWidget(self.text_edit_label); self.layout.addWidget(self.text_edit)
         self.layout.addWidget(self.font_label); self.layout.addWidget(self.font_combo)
         self.layout.addWidget(self.font_size_label); self.layout.addWidget(self.font_size_spinbox)
         self.layout.addWidget(self.color_label); self.layout.addWidget(self.color_button)
+        self.layout.addWidget(self.transition_duration_label); self.layout.addWidget(self.transition_duration_spinbox)
 
         self.text_edit.textChanged.connect(self.text_changed.emit)
         self.font_combo.currentFontChanged.connect(lambda font: self.font_changed.emit(font.family()))
         self.font_size_spinbox.valueChanged.connect(self.font_size_changed.emit)
         self.color_button.clicked.connect(self.open_color_dialog)
+        self.transition_duration_spinbox.valueChanged.connect(self.transition_duration_changed.emit)
         
         self.clear_properties()
 
@@ -172,8 +208,9 @@ class PropertiesPanel(QWidget):
             self.color_label.show(); self.color_button.show(); self.update_color_button(QColor(item.data(4)))
         elif item.type() == TRANSITION_TYPE:
             self.path_label.show()
-            self.path_label.setText("Transition")
-
+            self.path_label.setText(f"Transition: {item.data(0)}")
+            self.transition_duration_label.show(); self.transition_duration_spinbox.show()
+            self.transition_duration_spinbox.setValue(item.data(1))
 
     def clear_properties(self):
         self.path_label.hide(); self.duration_label.hide()
@@ -181,6 +218,7 @@ class PropertiesPanel(QWidget):
         self.font_label.hide(); self.font_combo.hide()
         self.font_size_label.hide(); self.font_size_spinbox.hide()
         self.color_label.hide(); self.color_button.hide()
+        self.transition_duration_label.hide(); self.transition_duration_spinbox.hide()
 
 class Timeline(QGraphicsView):
     frame_ready = Signal(QImage); item_selected = Signal(QGraphicsRectItem)
@@ -221,7 +259,7 @@ class Timeline(QGraphicsView):
         default_duration = 5; clip_width = default_duration * self.pixels_per_second
         text_item = TextClipItem(0, self.text_track_y, clip_width, self.track_height - 10)
         text_item.setData(0, "New Text"); text_item.setData(1, default_duration)
-        text_item.setData(2, "Arial"); text_item.setData(3, 70); text_item.setData(4, "white") # font, size, color
+        text_item.setData(2, "Arial"); text_item.setData(3, 70); text_item.setData(4, "white")
         self.scene.addItem(text_item)
 
     def add_audio_clip(self, file_path):
@@ -235,8 +273,6 @@ class Timeline(QGraphicsView):
 
     def add_transition(self):
         playhead_x = self.playhead.line().x1()
-        
-        # Find two adjacent video clips at the playhead position
         items_at_pos = self.scene.items(QRectF(playhead_x - 1, self.video_track_y, 2, self.track_height))
         video_clips = [item for item in items_at_pos if isinstance(item, VideoClipItem)]
 
@@ -244,31 +280,22 @@ class Timeline(QGraphicsView):
             clip1 = min(video_clips, key=lambda c: c.sceneBoundingRect().right())
             clip2 = max(video_clips, key=lambda c: c.sceneBoundingRect().left())
 
-            # Check if they are adjacent
-            if clip1.sceneBoundingRect().right() == clip2.sceneBoundingRect().left():
-                duration = 1.0 # 1 second
+            if abs(clip1.sceneBoundingRect().right() - clip2.sceneBoundingRect().left()) < 1:
+                duration = 1.0
                 width = duration * self.pixels_per_second
-                
-                # Create and add the transition item
                 transition_item = TransitionItem(clip1.sceneBoundingRect().right() - width / 2, self.video_track_y, width, self.track_height - 10)
                 transition_item.setData(0, 'crossfade')
                 transition_item.setData(1, duration)
                 self.scene.addItem(transition_item)
 
-
     def to_dict(self):
         project_data = []
         for item in self.scene.items():
             if not isinstance(item, QGraphicsRectItem): continue
-            
             num_data = 0
-            if item.type() == TEXT_TYPE:
-                num_data = 5
-            elif item.type() in [CLIP_TYPE, AUDIO_TYPE]:
-                num_data = 3
-            elif item.type() == TRANSITION_TYPE:
-                num_data = 2
-
+            if item.type() == TEXT_TYPE: num_data = 5
+            elif item.type() in [CLIP_TYPE, AUDIO_TYPE]: num_data = 3
+            elif item.type() == TRANSITION_TYPE: num_data = 2
             item_data = {
                 'type': item.type(),
                 'x': item.x(), 'y': item.y(), 'width': item.rect().width(), 'height': item.rect().height(),
@@ -310,6 +337,15 @@ class Timeline(QGraphicsView):
         selected_items = self.scene.selectedItems()
         if selected_items and selected_items[0].type() == TEXT_TYPE: selected_items[0].setData(4, color.name())
 
+    def update_selected_transition_duration(self, duration):
+        selected_items = self.scene.selectedItems()
+        if selected_items and selected_items[0].type() == TRANSITION_TYPE:
+            item = selected_items[0]
+            item.setData(1, duration)
+            width = duration * self.pixels_per_second
+            item.setRect(item.rect().x(), item.rect().y(), width, item.rect().height())
+
+
     def play(self): self.playback_timer.start()
     def pause(self): self.playback_timer.stop()
     def delete_selected(self): [self.scene.removeItem(item) for item in self.scene.selectedItems()]
@@ -350,47 +386,31 @@ class Timeline(QGraphicsView):
         if cap:
             cap.set(cv2.CAP_PROP_POS_MSEC, total_time_in_source * 1000)
             ret, frame = cap.read()
-            if ret:
-                return frame
+            if ret: return frame
         return np.zeros((100, 100, 3), np.uint8)
 
-
     def get_video_frame_at(self, x_pos):
-        # Check for transition
         transition_items = [item for item in self.scene.items(QRectF(x_pos, self.video_track_y, 1, self.track_height)) if item.type() == TRANSITION_TYPE]
         if transition_items:
             transition_item = transition_items[0]
             transition_rect = transition_item.sceneBoundingRect()
-            
-            # Find the two clips for the transition
             clip1_items = [item for item in self.scene.items(QRectF(transition_rect.left() - 1, self.video_track_y, 1, self.track_height)) if item.type() == CLIP_TYPE]
             clip2_items = [item for item in self.scene.items(QRectF(transition_rect.right(), self.video_track_y, 1, self.track_height)) if item.type() == CLIP_TYPE]
 
             if clip1_items and clip2_items:
                 clip1 = clip1_items[0]
                 clip2 = clip2_items[0]
-
-                # Get frames from both clips
                 frame1 = self.get_frame_from_clip(clip1, x_pos)
                 frame2 = self.get_frame_from_clip(clip2, x_pos)
-
-                # Blend the frames
                 progress = (x_pos - transition_rect.left()) / transition_rect.width()
-                
-                # Resize frames to be the same size before blending
                 h, w, _ = frame1.shape
                 frame2_resized = cv2.resize(frame2, (w, h))
-
                 blended_frame = cv2.addWeighted(frame1, 1 - progress, frame2_resized, progress, 0)
                 return blended_frame
 
-
-        # If no transition, get the frame from the single clip
         video_items = [item for item in self.scene.items(QRectF(x_pos, self.video_track_y, 1, self.track_height)) if item.type() == CLIP_TYPE]
         if not video_items: return np.zeros((100, 100, 3), np.uint8)
-        
         return self.get_frame_from_clip(video_items[0], x_pos)
-
 
     def overlay_text_at(self, frame, x_pos):
         text_items = [item for item in self.scene.items(QRectF(x_pos, self.text_track_y, 1, self.track_height)) if item.type() == TEXT_TYPE]
@@ -400,26 +420,17 @@ class Timeline(QGraphicsView):
             font_name = item.data(2)
             font_size = item.data(3)
             color = item.data(4)
-
-            # Convert OpenCV (BGR) to Pillow (RGB)
             frame_pil = Image.fromarray(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
             draw = ImageDraw.Draw(frame_pil)
-            
             try:
                 font = ImageFont.truetype(font_name, font_size)
             except IOError:
                 font = ImageFont.load_default()
-
-            # Calculate text position
             text_bbox = draw.textbbox((0,0), text, font=font)
             text_width = text_bbox[2] - text_bbox[0]
             text_height = text_bbox[3] - text_bbox[1]
-
             position = ((frame_pil.width - text_width) // 2, (frame_pil.height - text_height) // 2)
-            
             draw.text(position, text, font=font, fill=color)
-            
-            # Convert back to OpenCV format
             frame = cv2.cvtColor(np.array(frame_pil), cv2.COLOR_RGB2BGR)
         return frame
 
@@ -460,6 +471,7 @@ class MainWindow(QMainWindow):
         self.properties_panel.font_changed.connect(self.timeline_panel.update_selected_text_font)
         self.properties_panel.font_size_changed.connect(self.timeline_panel.update_selected_text_font_size)
         self.properties_panel.color_changed.connect(self.timeline_panel.update_selected_text_color)
+        self.properties_panel.transition_duration_changed.connect(self.timeline_panel.update_selected_transition_duration)
         self.timeline_panel.frame_ready.connect(self.preview_panel.set_frame)
         play_button.clicked.connect(self.timeline_panel.play); pause_button.clicked.connect(self.timeline_panel.pause)
         split_button.clicked.connect(self.timeline_panel.split_selected); delete_button.clicked.connect(self.timeline_panel.delete_selected)
