@@ -1,6 +1,6 @@
 from PySide6.QtWidgets import QGraphicsRectItem
 from PySide6.QtGui import QColor, QBrush, QPen, QMouseEvent
-from PySide6.QtCore import QPointF
+from PySide6.QtCore import QPointF, Qt
 
 from src.commands.command import MoveItemCommand
 

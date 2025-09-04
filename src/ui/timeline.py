@@ -2,8 +2,8 @@ import cv2
 import numpy as np
 from PySide6.QtWidgets import QGraphicsView, QGraphicsScene
 from PySide6.QtGui import QPainter, QColor, QPen, QFont, QImage
-from PySide6.QtCore import Signal, QRectF, QTimer
-from moviepy.editor import AudioFileClip
+from PySide6.QtCore import Signal, QRectF, QTimer, Qt
+from mutagen.mp3 import MP3
 from PIL import Image, ImageDraw, ImageFont
 
 from src.logic.timeline_items import (
@@ -89,12 +89,15 @@ class Timeline(QGraphicsView):
         text_item.setData(2, "Arial")
         text_item.setData(3, 70)
         text_item.setData(4, "white")
+        text_item.setData(5, "center")
+        text_item.setData(6, 0)
+        text_item.setData(7, 0)
         self.command_history.execute(AddItemCommand(self.scene, text_item))
 
     def add_audio_clip(self, file_path):
         try:
-            audio = AudioFileClip(file_path)
-            duration = audio.duration
+            audio = MP3(file_path)
+            duration = audio.info.length
             clip_width = duration * self.pixels_per_second
             x_pos = 0
             for item in self.scene.items():
@@ -131,7 +134,7 @@ class Timeline(QGraphicsView):
             if not isinstance(item, QGraphicsRectItem): continue
             num_data = 0
             if item.type() == CLIP_TYPE: num_data = 5
-            elif item.type() == TEXT_TYPE: num_data = 5
+            elif item.type() == TEXT_TYPE: num_data = 8
             elif item.type() == AUDIO_TYPE: num_data = 3
             elif item.type() == TRANSITION_TYPE: num_data = 2
             item_data = {

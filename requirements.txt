@@ -1,5 +1,5 @@
 PySide6
-moviepy
 opencv-python
 numpy
 Pillow
+mutagen

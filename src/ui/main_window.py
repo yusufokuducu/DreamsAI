@@ -1,7 +1,7 @@
 import json
 from PySide6.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QGridLayout, QHBoxLayout, 
-    QPushButton, QProgressBar, QFileDialog
+    QPushButton, QProgressBar, QFileDialog, QLabel
 )
 from PySide6.QtGui import QAction, QColor, QPalette
 from PySide6.QtCore import QThread
@@ -22,8 +22,10 @@ class MainWindow(QMainWindow):
         main_layout.setContentsMargins(0,0,0,0)
         main_layout.setSpacing(0)
 
-        self.timeline_panel = Timeline(self)
         self.create_menu()
+        self.timeline_panel = Timeline(self)
+        self.undo_action.triggered.connect(self.timeline_panel.command_history.undo)
+        self.redo_action.triggered.connect(self.timeline_panel.command_history.redo)
         header = self.create_header()
         main_layout.addWidget(header)
 
@@ -117,8 +119,6 @@ class MainWindow(QMainWindow):
         edit_menu = menu_bar.addMenu("Edit")
         self.undo_action = QAction("Undo", self)
         self.redo_action = QAction("Redo", self)
-        self.undo_action.triggered.connect(self.timeline_panel.command_history.undo)
-        self.redo_action.triggered.connect(self.timeline_panel.command_history.redo)
         edit_menu.addAction(self.undo_action)
         edit_menu.addAction(self.redo_action)
 
