@@ -2,7 +2,8 @@ import cv2
 import numpy as np
 from PySide6.QtWidgets import QGraphicsView, QGraphicsScene
 from PySide6.QtGui import QPainter, QColor, QPen, QFont, QImage
-from PySide6.QtCore import Signal, QRectF, QTimer, Qt
+from PySide6.QtCore import Signal, QRectF, QTimer, Qt, QUrl
+from PySide6.QtMultimedia import QMediaPlayer, QAudioOutput
 from mutagen.mp3 import MP3
 from PIL import Image, ImageDraw, ImageFont
 
@@ -38,25 +39,86 @@ class Timeline(QGraphicsView):
         self.scene.selectionChanged.connect(self.on_selection_changed)
         self.command_history = CommandHistory(self.main_window)
 
+        self.track_header_width = 60
+        self.track_labels = []
+        self.horizontalScrollBar().valueChanged.connect(self.update_track_labels)
+
+        self.player = QMediaPlayer()
+        self.audio_output = QAudioOutput()
+        self.player.setAudioOutput(self.audio_output)
+
     def setup_scene(self):
         self.scene.clear()
-        self.draw_ruler()
+        self.draw_background_and_ruler()
         self.playhead = self.scene.addLine(0, 0, 0, 600, QPen(Qt.red, 2))
+        self.playhead.setZValue(1)
 
-    def draw_ruler(self):
+    def update_track_labels(self, value):
+        for label in self.track_labels:
+            label.setPos(value + 5, label.y())
+
+    def draw_background_and_ruler(self):
+        for item in self.scene.items():
+            if item.zValue() == -1:
+                self.scene.removeItem(item)
+        
+        for label in self.track_labels:
+            self.scene.removeItem(label)
+        self.track_labels.clear()
+
         self.scene.setSceneRect(0, 0, self.pixels_per_second * 60 * 10, 600)
+        
+        track_color_1 = QColor("#2A2A2A")
+        track_color_2 = QColor("#2E2E2E")
+        
+        bg_rect1 = self.scene.addRect(0, self.video_track_y, self.scene.width(), self.track_height, QPen(Qt.NoPen), track_color_1)
+        bg_rect2 = self.scene.addRect(0, self.text_track_y, self.scene.width(), self.track_height, QPen(Qt.NoPen), track_color_2)
+        bg_rect3 = self.scene.addRect(0, self.audio_track_y, self.scene.width(), self.track_height, QPen(Qt.NoPen), track_color_1)
+        bg_rect1.setZValue(-1)
+        bg_rect2.setZValue(-1)
+        bg_rect3.setZValue(-1)
+
+        header_font = QFont("Arial", 10, QFont.Bold)
+        
+        v_label = self.scene.addText("V1", header_font)
+        v_label.setDefaultTextColor(Qt.white)
+        v_label.setPos(0, self.video_track_y + (self.track_height - v_label.boundingRect().height()) / 2)
+        v_label.setZValue(2)
+        self.track_labels.append(v_label)
+
+        t_label = self.scene.addText("T1", header_font)
+        t_label.setDefaultTextColor(Qt.white)
+        t_label.setPos(0, self.text_track_y + (self.track_height - t_label.boundingRect().height()) / 2)
+        t_label.setZValue(2)
+        self.track_labels.append(t_label)
+
+        a_label = self.scene.addText("A1", header_font)
+        a_label.setDefaultTextColor(Qt.white)
+        a_label.setPos(0, self.audio_track_y + (self.track_height - a_label.boundingRect().height()) / 2)
+        a_label.setZValue(2)
+        self.track_labels.append(a_label)
+
+        self.update_track_labels(self.horizontalScrollBar().value())
+
         pen = QPen(Qt.white)
         font = QFont("Arial", 8)
-        self.scene.addLine(0, self.ruler_height, self.scene.width(), self.ruler_height, pen)
+        ruler_line = self.scene.addLine(0, self.ruler_height, self.scene.width(), self.ruler_height, pen)
+        ruler_line.setZValue(-1)
+
         for i in range(int(self.scene.width() / self.pixels_per_second)):
             x = i * self.pixels_per_second
+            if x < self.track_header_width: continue
+            
             if i % 5 == 0:
-                self.scene.addLine(x, self.ruler_height - 10, x, self.ruler_height, pen)
+                line = self.scene.addLine(x, self.ruler_height - 10, x, self.ruler_height, pen)
                 text = self.scene.addText(f"{i}s", font)
                 text.setDefaultTextColor(Qt.white)
                 text.setPos(x + 2, self.ruler_height - 25)
+                line.setZValue(-1)
+                text.setZValue(-1)
             else:
-                self.scene.addLine(x, self.ruler_height - 5, x, self.ruler_height, pen)
+                line = self.scene.addLine(x, self.ruler_height - 5, x, self.ruler_height, pen)
+                line.setZValue(-1)
 
     def add_clip(self, file_path):
         try:
@@ -77,6 +139,12 @@ class Timeline(QGraphicsView):
             clip_rect.setData(3, False) # Grayscale
             clip_rect.setData(4, 1.0) # Volume
             self.command_history.execute(AddItemCommand(self.scene, clip_rect))
+
+            audio_clip_rect = AudioClipItem(x_pos, self.audio_track_y, clip_width, self.track_height - 10)
+            audio_clip_rect.setData(0, file_path)
+            audio_clip_rect.setData(1, duration)
+            audio_clip_rect.setData(2, 1.0) # Volume
+            self.command_history.execute(AddItemCommand(self.scene, audio_clip_rect))
         except Exception as e:
             print(f"Error adding clip: {e}")
 
@@ -174,10 +242,59 @@ class Timeline(QGraphicsView):
         command = ChangePropertyCommand(item, data_index, old_value, new_value, self)
         self.command_history.execute(command)
 
+    def wheelEvent(self, event):
+        if event.modifiers() == Qt.ControlModifier:
+            scene_pos = self.mapToScene(event.position().toPoint())
+            time_at_mouse = scene_pos.x() / self.pixels_per_second
+
+            delta = event.angleDelta().y()
+            if delta > 0:
+                new_pixels_per_second = self.pixels_per_second * 1.2
+            else:
+                new_pixels_per_second = max(10, self.pixels_per_second / 1.2)
+            
+            scale_factor = new_pixels_per_second / self.pixels_per_second
+            self.pixels_per_second = new_pixels_per_second
+
+            for item in self.scene.items():
+                if isinstance(item, (VideoClipItem, AudioClipItem, TextClipItem, TransitionItem)):
+                    item.setPos(item.x() * scale_factor, item.y())
+                    rect = item.rect()
+                    item.setRect(rect.x(), rect.y(), rect.width() * scale_factor, rect.height())
+
+            self.draw_background_and_ruler()
+            playhead_line = self.playhead.line()
+            self.playhead.setLine(playhead_line.x1() * scale_factor, playhead_line.y1(), playhead_line.x2() * scale_factor, playhead_line.y2())
+            
+            new_mouse_x = time_at_mouse * self.pixels_per_second
+            delta_x = new_mouse_x - scene_pos.x()
+            self.horizontalScrollBar().setValue(self.horizontalScrollBar().value() - delta_x)
+
+        else:
+            super().wheelEvent(event)
+
     def play(self):
+        if self.player.playbackState() == QMediaPlayer.PlaybackState.PausedState:
+            self.player.play()
+        else:
+            playhead_x = self.playhead.line().x1()
+            items_at_pos = self.scene.items(QRectF(playhead_x, self.audio_track_y, 1, self.track_height))
+            audio_clips = [item for item in items_at_pos if isinstance(item, AudioClipItem)]
+
+            if audio_clips:
+                clip = audio_clips[0]
+                file_path = clip.data(0)
+                
+                time_in_clip_seconds = (playhead_x - clip.scenePos().x()) / self.pixels_per_second
+                
+                self.player.setSource(QUrl.fromLocalFile(file_path))
+                self.player.setPosition(int(time_in_clip_seconds * 1000))
+                self.player.play()
+
         self.playback_timer.start()
 
     def pause(self):
+        self.player.pause()
         self.playback_timer.stop()
     
     def delete_selected(self):

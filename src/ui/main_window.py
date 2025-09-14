@@ -1,10 +1,10 @@
 import json
 from PySide6.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QGridLayout, QHBoxLayout, 
-    QPushButton, QProgressBar, QFileDialog, QLabel
+    QPushButton, QProgressBar, QFileDialog, QLabel, QSplitter
 )
 from PySide6.QtGui import QAction, QColor, QPalette
-from PySide6.QtCore import QThread
+from PySide6.QtCore import QThread, Qt
 
 from src.ui.timeline import Timeline
 from src.ui.properties_panel import PropertiesPanel
@@ -29,9 +29,8 @@ class MainWindow(QMainWindow):
         header = self.create_header()
         main_layout.addWidget(header)
 
-        content_widget = QWidget()
-        grid_layout = QGridLayout(content_widget)
-        main_layout.addWidget(content_widget)
+        top_widget = QWidget()
+        top_layout = QGridLayout(top_widget)
 
         left_panel = QWidget()
         left_layout = QHBoxLayout(left_panel)
@@ -60,6 +59,13 @@ class MainWindow(QMainWindow):
         self.preview_panel = PreviewPanel()
         self.properties_panel = PropertiesPanel()
 
+        top_layout.addWidget(left_panel, 0, 0, 1, 1)
+        top_layout.addWidget(self.preview_panel, 0, 1, 1, 2)
+        top_layout.addWidget(self.properties_panel, 0, 3, 1, 1)
+        top_layout.setColumnStretch(0, 25)
+        top_layout.setColumnStretch(1, 50)
+        top_layout.setColumnStretch(3, 25)
+
         timeline_container = QWidget()
         timeline_layout = QVBoxLayout(timeline_container)
         timeline_layout.setContentsMargins(0,0,0,0)
@@ -79,15 +85,13 @@ class MainWindow(QMainWindow):
         timeline_layout.addWidget(controls_widget)
         timeline_layout.addWidget(self.timeline_panel)
 
-        grid_layout.addWidget(left_panel, 0, 0, 1, 1)
-        grid_layout.addWidget(self.preview_panel, 0, 1, 1, 2)
-        grid_layout.addWidget(self.properties_panel, 0, 3, 1, 1)
-        grid_layout.addWidget(timeline_container, 1, 0, 1, 4)
-        grid_layout.setColumnStretch(0, 25)
-        grid_layout.setColumnStretch(1, 50)
-        grid_layout.setColumnStretch(3, 25)
-        grid_layout.setRowStretch(0, 70)
-        grid_layout.setRowStretch(1, 30)
+        splitter = QSplitter(Qt.Vertical)
+        splitter.addWidget(top_widget)
+        splitter.addWidget(timeline_container)
+        splitter.setStretchFactor(0, 7)
+        splitter.setStretchFactor(1, 3)
+
+        main_layout.addWidget(splitter)
 
         self.status_bar = self.statusBar()
         self.progress_bar = QProgressBar()
