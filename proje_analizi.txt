@@ -1,0 +1,151 @@
+Dreams AI - Proje Analizi ve Yol Haritası
+=========================================
+
+Bu doküman, Dreams AI uygulamasının mevcut durumunu analiz eder, tespit edilen eksiklikleri ve bu eksikliklerin nasıl giderileceğine dair teknik önerileri içerir. Ayrıca, uygulamanın gelecekteki gelişimine yönelik potansiyel yeni özellikleri listeler.
+
+BÖLÜM 1: MEVCUT DURUMDAKİ EKSİKLİKLER VE İYİLEŞTİRMELER
+---------------------------------------------------------
+
+### 1.1. Güvenlik: Hardcoded API Anahtarı
+
+**Sorun:** Google AI API anahtarı, `lib/config/api_config.dart` dosyası içinde doğrudan metin olarak saklanmaktadır. Bu, uygulamanın kaynak koduna erişen herhangi birinin API anahtarını ele geçirmesine olanak tanır. Bu durum, anahtarınızın kötüye kullanılmasına ve beklenmedik maliyetlere yol açabilir.
+
+**Çözüm (Teknik Detaylar):**
+1.  **flutter_dotenv Paketini Ekleme:** Projenize ortam değişkenlerini yönetmek için popüler bir paket olan `flutter_dotenv`'i ekleyin. Terminalde aşağıdaki komutu çalıştırın:
+    ```
+    flutter pub add flutter_dotenv
+    ```
+2.  **.env Dosyası Oluşturma:** Projenizin kök dizininde (pubspec.yaml ile aynı seviyede) `.env` adında bir dosya oluşturun.
+3.  **API Anahtarını .env Dosyasına Taşıma:** `.env` dosyasının içine API anahtarınızı aşağıdaki formatta yazın:
+    ```
+    GOOGLE_API_KEY=AIzaSyDUF2gnrZ0vnesGc_H1SahBGb2QZRPtJlU
+    ```
+4.  **.gitignore'a Ekleme:** `.env` dosyasının Git reponuza dahil edilmemesi çok önemlidir. `.gitignore` dosyanızı açın ve sonuna şu satırı ekleyin:
+    ```
+    .env
+    ```
+5.  **Uygulama Başlangıcında Ortam Değişkenlerini Yükleme:** `lib/main.dart` dosyasında, `main` fonksiyonunu `async` olarak güncelleyin ve uygulama başlamadan önce `.env` dosyasını yükleyin.
+    ```dart
+    import 'package:flutter_dotenv/flutter_dotenv.dart';
+
+    Future<void> main() async {
+      await dotenv.load(fileName: ".env");
+      runApp(const MyApp());
+    }
+    ```
+6.  **API Yapılandırmasını Güncelleme:** `lib/config/api_config.dart` dosyasındaki `googleApiKey` getter'ını, anahtarı `dotenv` üzerinden okuyacak şekilde değiştirin.
+    ```dart
+    // Mevcut kod:
+    // final envApiKey = String.fromEnvironment('GOOGLE_API_KEY');
+    // if (envApiKey.isEmpty) { return 'AIzaSy...'; }
+    // return envApiKey;
+
+    // Güncellenmiş kod:
+    static String get googleApiKey {
+      return dotenv.env['GOOGLE_API_KEY'] ?? '';
+    }
+    ```
+
+### 1.2. Veri Kalıcılığı: Rüya Geçmişinin Kaydedilmemesi
+
+**Sorun:** Projede `dream_history_service.dart` ve `history_screen.dart` gibi dosyalar bulunsa da, kullanıcı bir rüya yorumu aldığında bu yorum hiçbir yere kaydedilmemektedir. Kullanıcı uygulamayı kapattığında veya sonuç ekranından geri döndüğünde tüm veriler kaybolur.
+
+**Çözüm (Teknik Detaylar):**
+1.  **Yerel Veritabanı Paketlerini Ekleme:** Cihazda veri saklamak için `hive` ve `hive_flutter` paketlerini kullanabilirsiniz. Hive, Dart objelerini doğrudan saklama konusunda oldukça performanslıdır.
+    ```
+    flutter pub add hive hive_flutter
+    flutter pub add -d hive_generator build_runner 
+    ```
+2.  **Modeli Hive ile Uyumlu Hale Getirme:** `lib/models/dream_history.dart` modelini Hive'ın anlayacağı şekilde güncelleyin.
+    ```dart
+    import 'package:hive/hive.dart';
+
+    part 'dream_history.g.dart'; // Oluşturulacak dosya
+
+    @HiveType(typeId: 0)
+    class DreamHistory extends HiveObject {
+      @HiveField(0)
+      final String dream;
+
+      @HiveField(1)
+      final String interpretation;
+
+      @HiveField(2)
+      final DateTime date;
+
+      DreamHistory({required this.dream, required this.interpretation, required this.date});
+    }
+    ```
+3.  **Hive'ı Başlatma:** `main.dart` içinde Hive'ı başlatın ve oluşturduğunuz `Adapter`'ı kaydedin.
+    ```dart
+    import 'package:hive_flutter/hive_flutter.dart';
+
+    await Hive.initFlutter();
+    Hive.registerAdapter(DreamHistoryAdapter()); // build_runner çalıştırıldıktan sonra oluşacak
+    await Hive.openBox<DreamHistory>('dream_history');
+    ```
+4.  **Servis Katmanını Implemente Etme:** `lib/services/dream_history_service.dart` içinde rüyaları kaydetme ve getirme fonksiyonlarını yazın.
+    ```dart
+    class DreamHistoryService {
+      final Box<DreamHistory> _historyBox = Hive.box('dream_history');
+
+      Future<void> saveDream(DreamHistory dream) async {
+        await _historyBox.add(dream);
+      }
+
+      List<DreamHistory> getDreams() {
+        return _historyBox.values.toList().cast<DreamHistory>();
+      }
+    }
+    ```
+5.  **Veriyi Kaydetme ve Görüntüleme:**
+    *   `dream_result_screen.dart` içinde, yorum başarılı bir şekilde alındığında `DreamHistoryService`'i kullanarak rüyayı kaydedin.
+    *   `history_screen.dart` içinde, `DreamHistoryService`'den rüyaları çekin ve bir `ListView` içinde gösterin.
+
+### 1.3. Hata Yönetimi: Kullanıcı Dostu Olmayan Hata Mesajları
+
+**Sorun:** API'den veya uygulamadan kaynaklanan hatalar (`SnackBar` ile) doğrudan kullanıcıya gösteriliyor. "Geçersiz yanıt formatı" gibi teknik mesajlar son kullanıcı için kafa karıştırıcıdır.
+
+**Çözüm (Teknik Detaylar):**
+1.  **Hata Mesajlarını Merkezileştirme:** `gemini_service.dart` içindeki `catch` bloklarında fırlatılan `Exception`'ların mesajlarını daha kullanıcı dostu hale getirin.
+    ```dart
+    // Örnek:
+    on FormatException {
+      throw Exception('Yorum formatında bir sorun oluştu. Lütfen daha sonra tekrar deneyin.');
+    } on http.ClientException {
+      throw Exception('İnternet bağlantınızda bir sorun var. Lütfen kontrol edin.');
+    }
+    ```
+2.  **Hata Diyalogları:** `SnackBar` yerine, daha açıklayıcı ve kullanıcının aksiyon alabileceği (örn: "Tekrar Dene" butonu) `AlertDialog` pencereleri kullanmayı düşünebilirsiniz.
+
+BÖLÜM 2: EKLENEBİLECEK YENİ ÖZELLİKLER
+---------------------------------------
+
+### 2.1. Profil ve Bulut Senkronizasyonu
+
+**Fikir:** Kullanıcıların bir hesap oluşturarak rüyalarını kendi profilleri altında saklaması ve farklı cihazlardan erişebilmesi.
+
+**Teknik Detaylar:**
+1.  **Firebase Entegrasyonu:** Projenize `firebase_core` ve `firebase_auth` paketlerini ekleyerek Firebase'i entegre edin.
+2.  **Kimlik Doğrulama:** E-posta/şifre veya Google/Apple ile giriş mekanizmalarını `firebase_auth` kullanarak implemente edin.
+3.  **Bulut Veritabanı:** Yerel `Hive` yerine, rüya geçmişini `cloud_firestore` kullanarak Firebase Firestore'a kaydedin. Her rüya kaydı, o anki kullanıcının UID'sini içermelidir. Bu, verilerin kullanıcıya özel ve senkronize olmasını sağlar.
+4.  **Profil Ekranı:** `profile_screen.dart` ekranını, kullanıcının e-postasını görebileceği ve "Çıkış Yap" butonu gibi işlevleri barındıracak şekilde geliştirin.
+
+### 2.2. Gelişmiş Rüya Analizi ve İstatistikler
+
+**Fikir:** Kullanıcının kaydettiği rüyalar arasında en sık görülen temaları, sembolleri veya duyguları analiz ederek görsel olarak sunmak.
+
+**Teknik Detaylar:**
+1.  **AI Prompt'u Güncelleme:** `gemini_service.dart` içindeki `_systemPrompt`'u, rüya yorumuna ek olarak rüyanın ana temalarını veya duygularını virgülle ayrılmış etiketler (tags) olarak döndürmesini isteyecek şekilde güncelleyin.
+    *   Örnek Prompt Eklemesi: `"Yorumun sonuna, rüyanın ana temalarını içeren 5 anahtar kelimeyi 'Etiketler: ' başlığı altında ekle."`
+2.  **Veri Analizi:** Kaydedilen rüyaların bu etiketlerini analiz ederek en sık tekrar edenleri bulun.
+3.  **Görselleştirme:** `fl_chart` veya `graphic` gibi bir paket kullanarak bu istatistikleri `history_screen.dart` veya yeni bir "Analiz" ekranında bir kelime bulutu (word cloud) veya çubuk grafik (bar chart) ile görselleştirin.
+
+### 2.3. Günlük Hatırlatıcı Bildirimler
+
+**Fikir:** Kullanıcıya her sabah "Dün geceki rüyanı kaydetmek ister misin?" şeklinde bir bildirim göndererek uygulama etkileşimini artırmak.
+
+**Teknik Detaylar:**
+1.  **Bildirim Paketi:** `flutter_local_notifications` paketini projeye ekleyin.
+2.  **İzin İsteme:** Uygulama ilk açıldığında kullanıcıdan bildirim göndermek için izin alın.
+3.  **Bildirim Planlama:** Kullanıcının belirleyeceği bir saatte (veya varsayılan olarak sabah 8-9 gibi) her gün tekrarlanacak şekilde yerel bir bildirim planlayın. Bu bildirim, tıklandığında uygulamayı açmalıdır.

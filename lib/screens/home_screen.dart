@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'dream_input_screen.dart';
 import 'history_screen.dart';
 import 'profile_screen.dart';
+import 'premium_screen.dart';
 
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
@@ -23,6 +24,20 @@ class _HomeScreenState extends State<HomeScreen> {
   Widget build(BuildContext context) {
     return Scaffold(
       body: _screens[_currentIndex],
+      floatingActionButton: FloatingActionButton(
+        onPressed: () {
+          Navigator.push(
+            context,
+            MaterialPageRoute(
+              builder: (context) => const PremiumScreen(),
+            ),
+          );
+        },
+        backgroundColor: const Color(0xFF6C63FF),
+        foregroundColor: Colors.white,
+        child: const Icon(Icons.star),
+      ),
+      floatingActionButtonLocation: FloatingActionButtonLocation.endFloat,
       bottomNavigationBar: Container(
         decoration: const BoxDecoration(
           border: Border(
